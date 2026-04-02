@@ -262,14 +262,76 @@ public class AdvancedSearchStep2Response {
         private List<String> cells;
         private Map<String, String> byHeader;
         private List<String> links;
+        private boolean thirdColumnPopupExists;
+        private String thirdColumnPopupHtml;
+        private String thirdColumnPopupHref;
+        private boolean popupExists;
+        private String popupHtml;
+        private String popupHref;
+        private Integer popupColumnIndex;
+        private String popupResolvedUrl;
+        private Integer popupResponseStatus;
+        private String popupResponseStatusMessage;
+        private String popupDetailText;
+        private String popupDetailHtml;
 
         public TableRowData() {
         }
 
-        public TableRowData(List<String> cells, Map<String, String> byHeader, List<String> links) {
+        public TableRowData(
+                List<String> cells,
+                Map<String, String> byHeader,
+                List<String> links,
+                boolean thirdColumnPopupExists,
+                String thirdColumnPopupHtml,
+                String thirdColumnPopupHref,
+                boolean popupExists,
+                String popupHtml,
+                String popupHref,
+                Integer popupColumnIndex) {
             this.cells = cells;
             this.byHeader = byHeader;
             this.links = links;
+            this.thirdColumnPopupExists = thirdColumnPopupExists;
+            this.thirdColumnPopupHtml = thirdColumnPopupHtml;
+            this.thirdColumnPopupHref = thirdColumnPopupHref;
+            this.popupExists = popupExists;
+            this.popupHtml = popupHtml;
+            this.popupHref = popupHref;
+            this.popupColumnIndex = popupColumnIndex;
+        }
+
+        public TableRowData(
+                List<String> cells,
+                Map<String, String> byHeader,
+                List<String> links,
+                boolean thirdColumnPopupExists,
+                String thirdColumnPopupHtml,
+                String thirdColumnPopupHref,
+                boolean popupExists,
+                String popupHtml,
+                String popupHref,
+                Integer popupColumnIndex,
+                String popupResolvedUrl,
+                Integer popupResponseStatus,
+                String popupResponseStatusMessage,
+                String popupDetailText,
+                String popupDetailHtml) {
+            this.cells = cells;
+            this.byHeader = byHeader;
+            this.links = links;
+            this.thirdColumnPopupExists = thirdColumnPopupExists;
+            this.thirdColumnPopupHtml = thirdColumnPopupHtml;
+            this.thirdColumnPopupHref = thirdColumnPopupHref;
+            this.popupExists = popupExists;
+            this.popupHtml = popupHtml;
+            this.popupHref = popupHref;
+            this.popupColumnIndex = popupColumnIndex;
+            this.popupResolvedUrl = popupResolvedUrl;
+            this.popupResponseStatus = popupResponseStatus;
+            this.popupResponseStatusMessage = popupResponseStatusMessage;
+            this.popupDetailText = popupDetailText;
+            this.popupDetailHtml = popupDetailHtml;
         }
 
         public List<String> getCells() {
@@ -294,6 +356,102 @@ public class AdvancedSearchStep2Response {
 
         public void setLinks(List<String> links) {
             this.links = links;
+        }
+
+        public boolean isThirdColumnPopupExists() {
+            return thirdColumnPopupExists;
+        }
+
+        public void setThirdColumnPopupExists(boolean thirdColumnPopupExists) {
+            this.thirdColumnPopupExists = thirdColumnPopupExists;
+        }
+
+        public String getThirdColumnPopupHtml() {
+            return thirdColumnPopupHtml;
+        }
+
+        public void setThirdColumnPopupHtml(String thirdColumnPopupHtml) {
+            this.thirdColumnPopupHtml = thirdColumnPopupHtml;
+        }
+
+        public String getThirdColumnPopupHref() {
+            return thirdColumnPopupHref;
+        }
+
+        public void setThirdColumnPopupHref(String thirdColumnPopupHref) {
+            this.thirdColumnPopupHref = thirdColumnPopupHref;
+        }
+
+        public boolean isPopupExists() {
+            return popupExists;
+        }
+
+        public void setPopupExists(boolean popupExists) {
+            this.popupExists = popupExists;
+        }
+
+        public String getPopupHtml() {
+            return popupHtml;
+        }
+
+        public void setPopupHtml(String popupHtml) {
+            this.popupHtml = popupHtml;
+        }
+
+        public String getPopupHref() {
+            return popupHref;
+        }
+
+        public void setPopupHref(String popupHref) {
+            this.popupHref = popupHref;
+        }
+
+        public Integer getPopupColumnIndex() {
+            return popupColumnIndex;
+        }
+
+        public void setPopupColumnIndex(Integer popupColumnIndex) {
+            this.popupColumnIndex = popupColumnIndex;
+        }
+
+        public String getPopupResolvedUrl() {
+            return popupResolvedUrl;
+        }
+
+        public void setPopupResolvedUrl(String popupResolvedUrl) {
+            this.popupResolvedUrl = popupResolvedUrl;
+        }
+
+        public Integer getPopupResponseStatus() {
+            return popupResponseStatus;
+        }
+
+        public void setPopupResponseStatus(Integer popupResponseStatus) {
+            this.popupResponseStatus = popupResponseStatus;
+        }
+
+        public String getPopupResponseStatusMessage() {
+            return popupResponseStatusMessage;
+        }
+
+        public void setPopupResponseStatusMessage(String popupResponseStatusMessage) {
+            this.popupResponseStatusMessage = popupResponseStatusMessage;
+        }
+
+        public String getPopupDetailText() {
+            return popupDetailText;
+        }
+
+        public void setPopupDetailText(String popupDetailText) {
+            this.popupDetailText = popupDetailText;
+        }
+
+        public String getPopupDetailHtml() {
+            return popupDetailHtml;
+        }
+
+        public void setPopupDetailHtml(String popupDetailHtml) {
+            this.popupDetailHtml = popupDetailHtml;
         }
     }
 }

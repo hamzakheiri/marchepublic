@@ -46,12 +46,14 @@ public class MarchePublicsController {
     }
 
     @GetMapping("/advanced-search/step-2")
-    public ResponseEntity<AdvancedSearchStep2Response> advancedSearchStep2() {
-        return ResponseEntity.ok(advancedSearchScraperService.scrapeStep2ClickSearch());
+    public ResponseEntity<AdvancedSearchStep2Response> advancedSearchStep2(
+            @RequestParam(defaultValue = "true") boolean includePopupDetails) {
+        return ResponseEntity.ok(advancedSearchScraperService.scrapeStep2ClickSearch(includePopupDetails));
     }
 
     @GetMapping("/advanced-search/table")
-    public ResponseEntity<AdvancedSearchStep2Response.TableData> advancedSearchTable() {
-        return ResponseEntity.ok(advancedSearchScraperService.scrapeStep2TableOnly());
+    public ResponseEntity<AdvancedSearchStep2Response.TableData> advancedSearchTable(
+            @RequestParam(defaultValue = "true") boolean includePopupDetails) {
+        return ResponseEntity.ok(advancedSearchScraperService.scrapeStep2TableOnly(includePopupDetails));
     }
 }
