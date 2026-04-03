@@ -2,13 +2,16 @@ package fr._42.marchepublic.service;
 
 import fr._42.marchepublic.controller.dto.ConsultationRow;
 import fr._42.marchepublic.model.Consultation;
+import fr._42.marchepublic.model.ConsultationDocument;
+import fr._42.marchepublic.model.Lot;
+import fr._42.marchepublic.repository.ConsultationDocumentRepository;
 import fr._42.marchepublic.repository.ConsultationRepository;
+import fr._42.marchepublic.repository.LotRepository;
+import org.jsoup.Connection;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
-
-import java.net.URI;
-
+import org.jsoup.select.Elements;
 import org.openqa.selenium.By;
 import org.openqa.selenium.JavascriptExecutor;
 import org.openqa.selenium.WebDriver;
@@ -19,15 +22,23 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.io.IOException;
+import java.net.URI;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class SeleniumAdvancedSearchService {
 
+    private static final String USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
     private final ObjectProvider<WebDriver> webDriverProvider;
     private final ConsultationRepository consultationRepository;
+    private final LotRepository lotRepository;
+    private final ConsultationDocumentRepository consultationDocumentRepository;
     private final String baseUrl;
     private final String advancedSearchUrl;
     private final long waitSeconds;
@@ -37,11 +48,15 @@ public class SeleniumAdvancedSearchService {
     public SeleniumAdvancedSearchService(
             ObjectProvider<WebDriver> webDriverProvider,
             ConsultationRepository consultationRepository,
+            LotRepository lotRepository,
+            ConsultationDocumentRepository consultationDocumentRepository,
             @Value("${scraper.marches-publics.default-url}") String baseUrl,
             @Value("${scraper.marches-publics.advanced-search-url}") String advancedSearchUrl,
             @Value("${scraper.selenium.page-load-timeout-seconds:30}") long waitSeconds) {
         this.webDriverProvider = webDriverProvider;
         this.consultationRepository = consultationRepository;
+        this.lotRepository = lotRepository;
+        this.consultationDocumentRepository = consultationDocumentRepository;
         this.baseUrl = baseUrl;
         this.advancedSearchUrl = advancedSearchUrl;
         this.waitSeconds = waitSeconds;
@@ -86,6 +101,207 @@ public class SeleniumAdvancedSearchService {
         waitForPageReady(driver);
     }
 
+    private void persistIfNew(ConsultationRow row) {
+        if (row.refConsultation() == null || consultationRepository.existsByRefConsultation(row.refConsultation())) {
+            return;
+        }
+
+        Consultation entity = new Consultation();
+        entity.setRefConsultation(row.refConsultation());
+        entity.setOrgAcronyme(row.orgAcronyme());
+        entity.setProcedureType(row.procedureType());
+        entity.setProcedureFullName(row.procedureFullName());
+        entity.setCategory(row.category());
+        entity.setPublishedDate(row.publishedDate());
+        entity.setReference(row.reference());
+        entity.setObject(row.object());
+        entity.setBuyer(row.buyer());
+        entity.setLocation(row.location());
+        entity.setDeadline(row.deadline());
+        entity.setDetailUrl(row.detailUrl());
+        entity.setLotsPopupUrl(row.lotsPopupUrl());
+        consultationRepository.save(entity);
+
+        if (row.lotsPopupUrl() != null) {
+            fetchAndPersistLots(entity, row.lotsPopupUrl());
+        }
+
+        if (row.detailUrl() != null) {
+            fetchAndPersistDocuments(entity, row.detailUrl());
+        }
+    }
+
+    private void fetchAndPersistDocuments(Consultation consultation, String detailUrl) {
+        try {
+            Map<String, String> cookies = extractSeleniumCookies();
+
+            Connection.Response response = Jsoup.connect(detailUrl)
+                    .userAgent(USER_AGENT)
+                    .timeout((int) (waitSeconds * 1000))
+                    .cookies(cookies)
+                    .ignoreHttpErrors(true)
+                    .execute();
+
+            Document detailDoc = Jsoup.parse(response.body(), detailUrl);
+
+            for (Element li : detailDoc.select("div.bloc-docs-link li.picto-link")) {
+                if (li.attr("style").contains("display:none")) continue;
+
+                Element link = li.selectFirst("a[id][href]");
+                if (link == null) continue;
+
+                String href = link.attr("href");
+                String label = clean(link.text());
+                String type = extractDocType(link.id());
+                String absoluteUrl = URI.create(detailUrl).resolve(href.replace("&amp;", "&")).toString();
+
+                if (type != null && consultationDocumentRepository.existsByConsultationIdAndType(consultation.getId(), type)) {
+                    continue;
+                }
+
+                ConsultationDocument document = new ConsultationDocument();
+                document.setConsultation(consultation);
+                document.setType(type);
+                document.setLabel(label);
+                document.setUrl(absoluteUrl);
+                consultationDocumentRepository.save(document);
+            }
+
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to fetch detail page: " + e.getMessage(), e);
+        }
+    }
+
+    private String extractDocType(String linkId) {
+        // e.g. "ctl0_CONTENU_PAGE_linkDownloadDce" -> "dce"
+        int idx = linkId.indexOf("linkDownload");
+        if (idx < 0) return null;
+        return linkId.substring(idx + "linkDownload".length()).toLowerCase();
+    }
+
+    private void fetchAndPersistLots(Consultation consultation, String lotsPopupUrl) {
+        try {
+            Map<String, String> cookies = extractSeleniumCookies();
+
+            Connection.Response response = Jsoup.connect(lotsPopupUrl)
+                    .userAgent(USER_AGENT)
+                    .timeout((int) (waitSeconds * 1000))
+                    .cookies(cookies)
+                    .ignoreHttpErrors(true)
+                    .execute();
+
+            Document doc = Jsoup.parse(response.body(), lotsPopupUrl);
+            parseLots(doc, consultation);
+
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to fetch lots popup: " + e.getMessage(), e);
+        }
+    }
+
+    private void parseLots(Document doc, Consultation consultation) {
+        // Each lot has a cautionProvisoire span — use these to find lot indices
+        Elements cautionSpans = doc.select("span[id*=repeaterLots_ctl][id$=_cautionProvisoire]");
+        Elements titleDivs = doc.select("div.content-bloc.bloc-600 > div.d-flex");
+        Elements boldSpans = doc.select("span.blue.bold");
+
+        for (int i = 0; i < cautionSpans.size(); i++) {
+            // Extract the lot index N from the ID: ctl0_CONTENU_PAGE_repeaterLots_ctl{N}_cautionProvisoire
+            String cautionId = cautionSpans.get(i).id();
+            String lotKey = extractRepeaterKey(cautionId); // e.g. "ctl0"
+            if (lotKey == null) continue;
+
+            Integer lotNumber = i + 1;
+            // Override with parsed number from span.blue.bold if available
+            if (i < boldSpans.size()) {
+                String boldText = boldSpans.get(i).text(); // "Lot 1 :"
+                try {
+                    lotNumber = Integer.parseInt(boldText.replaceAll("[^0-9]", "").trim());
+                } catch (NumberFormatException ignored) {}
+            }
+
+            if (lotRepository.existsByConsultationIdAndLotNumber(consultation.getId(), lotNumber)) {
+                continue;
+            }
+
+            String title = i < titleDivs.size() ? clean(titleDivs.get(i).ownText()) : null;
+            String estimation = textOf(doc, "span[id*=repeaterLots_" + lotKey + "][id$=labelReferentielZoneText]");
+            String caution = textOf(doc, "span[id*=repeaterLots_" + lotKey + "_cautionProvisoire]");
+            String qualifications = textOf(doc, "span[id*=repeaterLots_" + lotKey + "_qualification]");
+            String agrements = textOf(doc, "span[id*=repeaterLots_" + lotKey + "_agrements]");
+            String variante = textOf(doc, "span[id*=repeaterLots_" + lotKey + "_varianteValeur]");
+            String consEnv = textOf(doc, "span[id*=repeaterLots_" + lotKey + "_consEnvValeur]");
+            String tpePme = textOf(doc, "span[id*=repeaterLots_" + lotKey + "_labelReferentielRadio]");
+
+            // Category: content-bloc after "Catégorie" intitule within this lot's block
+            String category = null;
+            Element cautionEl = cautionSpans.get(i);
+            // Walk up to find the lot block, then search for category
+            Element block = cautionEl.closest("div.content");
+            if (block != null) {
+                for (Element intitule : block.select("div.intitule-bloc")) {
+                    if (normalize(intitule.text()).contains("categorie")) {
+                        Element next = intitule.nextElementSibling();
+                        if (next != null) category = clean(next.text());
+                        break;
+                    }
+                }
+            }
+
+            // Visites des lieux: combine all date + address pairs
+            String visitesLieux = null;
+            Elements dateVisites = doc.select("span[id*=repeaterLots_" + lotKey + "][id*=repeaterVisitesLieux][id$=_dateVisites]");
+            Elements adresseVisites = doc.select("span[id*=repeaterLots_" + lotKey + "][id*=repeaterVisitesLieux][id$=_adresseVisites]");
+            if (!dateVisites.isEmpty()) {
+                List<String> visites = new ArrayList<>();
+                for (int j = 0; j < dateVisites.size(); j++) {
+                    String date = clean(dateVisites.get(j).text());
+                    String addr = j < adresseVisites.size() ? clean(adresseVisites.get(j).text()) : null;
+                    if (date != null || addr != null) {
+                        visites.add((date != null ? date : "") + (addr != null ? " - " + addr : ""));
+                    }
+                }
+                visitesLieux = String.join(" | ", visites);
+            }
+
+            Lot lot = new Lot();
+            lot.setConsultation(consultation);
+            lot.setLotNumber(lotNumber);
+            lot.setTitle(title);
+            lot.setCategory(category);
+            lot.setEstimation(estimation);
+            lot.setCautionProvisoire(caution);
+            lot.setQualifications(qualifications);
+            lot.setAgrements(agrements);
+            lot.setVisitesLieux(visitesLieux);
+            lot.setVariante(variante);
+            lot.setConsiderationsEnv(consEnv);
+            lot.setReserveTpePme(tpePme);
+            lotRepository.save(lot);
+        }
+    }
+
+    private String extractRepeaterKey(String id) {
+        // e.g. "ctl0_CONTENU_PAGE_repeaterLots_ctl0_cautionProvisoire" -> "ctl0"
+        int idx = id.indexOf("repeaterLots_");
+        if (idx < 0) return null;
+        String after = id.substring(idx + "repeaterLots_".length()); // "ctl0_cautionProvisoire"
+        int underscore = after.indexOf("_");
+        return underscore > 0 ? after.substring(0, underscore) : null;
+    }
+
+    private Map<String, String> extractSeleniumCookies() {
+        Map<String, String> cookies = new HashMap<>();
+        for (org.openqa.selenium.Cookie cookie : driver.manage().getCookies()) {
+            cookies.put(cookie.getName(), cookie.getValue());
+        }
+        return cookies;
+    }
+
+    private String textOf(Document doc, String cssSelector) {
+        Element el = doc.selectFirst(cssSelector);
+        return el != null ? clean(el.text()) : null;
+    }
+
     private ConsultationRow parseRow(Element tr) {
         Element refCell = tr.selectFirst("td[headers=cons_ref]");
         Element intituleCell = tr.selectFirst("td[headers=cons_intitule]");
@@ -112,7 +328,6 @@ public class SeleniumAdvancedSearchService {
             procedureFullName = procDiv != null ? clean(procDiv.text()) : null;
             Element catDiv = refCell.selectFirst("[id$=panelBlocCategorie]");
             category = catDiv != null ? clean(catDiv.text()) : null;
-            // plain <div> after category holds the published date
             if (catDiv != null && catDiv.nextElementSibling() != null) {
                 publishedDate = clean(catDiv.nextElementSibling().text());
             }
@@ -187,27 +402,6 @@ public class SeleniumAdvancedSearchService {
                 location, deadline, detailUrl,
                 lotsPopupUrl
         );
-    }
-
-    private void persistIfNew(ConsultationRow row) {
-        if (row.refConsultation() == null || consultationRepository.existsByRefConsultation(row.refConsultation())) {
-            return;
-        }
-        Consultation entity = new Consultation();
-        entity.setRefConsultation(row.refConsultation());
-        entity.setOrgAcronyme(row.orgAcronyme());
-        entity.setProcedureType(row.procedureType());
-        entity.setProcedureFullName(row.procedureFullName());
-        entity.setCategory(row.category());
-        entity.setPublishedDate(row.publishedDate());
-        entity.setReference(row.reference());
-        entity.setObject(row.object());
-        entity.setBuyer(row.buyer());
-        entity.setLocation(row.location());
-        entity.setDeadline(row.deadline());
-        entity.setDetailUrl(row.detailUrl());
-        entity.setLotsPopupUrl(row.lotsPopupUrl());
-        consultationRepository.save(entity);
     }
 
     private String resolvePopupUrl(String jsHref, String baseUrl) {
