@@ -131,10 +131,12 @@ public class MarchePublicsAdvancedSearchScraperService {
             List<AdvancedSearchStep2Response.TabLayerData> tabLayers = extractTabLayers(resultDocument);
             AdvancedSearchStep2Response.TableData table = extractPrimaryTable(
                     resultDocument,
-                    searchResponse.url().toString(),
-                    sessionCookies,
-                    fetchPopupDetails
+                    searchResponse.url().toString()
             );
+
+            if (fetchPopupDetails) {
+                enrichRowsWithPopupDetails(table, sessionCookies);
+            }
 
             return new AdvancedSearchStep2Response(
                     advancedSearchUrl,
@@ -327,9 +329,7 @@ public class MarchePublicsAdvancedSearchScraperService {
 
     private AdvancedSearchStep2Response.TableData extractPrimaryTable(
             Document document,
-            String baseUrl,
-            Map<String, String> sessionCookies,
-            boolean fetchPopupDetails) {
+            String baseUrl) {
         Element table = findBestResultsTable(document);
         if (table == null) {
             return new AdvancedSearchStep2Response.TableData(new ArrayList<>(), new ArrayList<>());
@@ -427,14 +427,6 @@ public class MarchePublicsAdvancedSearchScraperService {
                 popupResolvedUrl = resolvePopupUrl(baseUrl, popupHref);
             }
 
-            if (fetchPopupDetails && popupResolvedUrl != null) {
-                PopupFetchResult popupFetchResult = fetchPopupContent(popupResolvedUrl, sessionCookies);
-                popupResponseStatus = popupFetchResult.statusCode();
-                popupResponseStatusMessage = popupFetchResult.statusMessage();
-                popupDetailText = popupFetchResult.text();
-                popupDetailHtml = popupFetchResult.html();
-            }
-
             rows.add(new AdvancedSearchStep2Response.TableRowData(
                     cells,
                     byHeader,
@@ -471,6 +463,26 @@ public class MarchePublicsAdvancedSearchScraperService {
         }
 
         return new AdvancedSearchStep2Response.TableData(headers, rows);
+    }
+
+    private void enrichRowsWithPopupDetails(
+            AdvancedSearchStep2Response.TableData table,
+            Map<String, String> sessionCookies) {
+        if (table == null || table.getRows() == null || table.getRows().isEmpty()) {
+            return;
+        }
+
+        for (AdvancedSearchStep2Response.TableRowData row : table.getRows()) {
+            if (row == null || row.getPopupResolvedUrl() == null || row.getPopupResolvedUrl().isBlank()) {
+                continue;
+            }
+
+            PopupFetchResult popupFetchResult = fetchPopupContent(row.getPopupResolvedUrl(), sessionCookies);
+            row.setPopupResponseStatus(popupFetchResult.statusCode());
+            row.setPopupResponseStatusMessage(popupFetchResult.statusMessage());
+            row.setPopupDetailText(popupFetchResult.text());
+            row.setPopupDetailHtml(popupFetchResult.html());
+        }
     }
 
     private String resolvePopupUrl(String baseUrl, String popupHref) {
