@@ -1,9 +1,14 @@
 package fr._42.marchepublic.service;
 
 import fr._42.marchepublic.controller.dto.ConsultationRow;
+import fr._42.marchepublic.model.Consultation;
+import fr._42.marchepublic.repository.ConsultationRepository;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
+
+import java.net.URI;
+
 import org.openqa.selenium.By;
 import org.openqa.selenium.JavascriptExecutor;
 import org.openqa.selenium.WebDriver;
@@ -22,6 +27,7 @@ import java.util.List;
 public class SeleniumAdvancedSearchService {
 
     private final ObjectProvider<WebDriver> webDriverProvider;
+    private final ConsultationRepository consultationRepository;
     private final String baseUrl;
     private final String advancedSearchUrl;
     private final long waitSeconds;
@@ -30,10 +36,12 @@ public class SeleniumAdvancedSearchService {
 
     public SeleniumAdvancedSearchService(
             ObjectProvider<WebDriver> webDriverProvider,
+            ConsultationRepository consultationRepository,
             @Value("${scraper.marches-publics.default-url}") String baseUrl,
             @Value("${scraper.marches-publics.advanced-search-url}") String advancedSearchUrl,
             @Value("${scraper.selenium.page-load-timeout-seconds:30}") long waitSeconds) {
         this.webDriverProvider = webDriverProvider;
+        this.consultationRepository = consultationRepository;
         this.baseUrl = baseUrl;
         this.advancedSearchUrl = advancedSearchUrl;
         this.waitSeconds = waitSeconds;
@@ -58,6 +66,7 @@ public class SeleniumAdvancedSearchService {
             ConsultationRow row = parseRow(tr);
             if (row != null) {
                 rows.add(row);
+                persistIfNew(row);
             }
         }
         return rows;
@@ -132,12 +141,22 @@ public class SeleniumAdvancedSearchService {
         }
 
         String location = null;
+        String lotsPopupUrl = null;
         if (lieuCell != null) {
             Element lieuDiv = lieuCell.selectFirst("[id$=panelBlocLieuxExec]");
             if (lieuDiv != null) {
                 Element clone = lieuDiv.clone();
                 clone.select(".bloc-info-bulle").remove();
                 location = clean(clone.text());
+            }
+
+            Element lotsLink = lieuCell.selectFirst("a[href*=PopUpDetailLots]");
+            if (lotsLink != null) {
+                Element img = lotsLink.selectFirst("img");
+                boolean visible = img != null && !img.attr("style").contains("display:none");
+                if (visible) {
+                    lotsPopupUrl = resolvePopupUrl(lotsLink.attr("href"), driver.getCurrentUrl());
+                }
             }
         }
 
@@ -165,8 +184,43 @@ public class SeleniumAdvancedSearchService {
                 procedureType, procedureFullName,
                 category, publishedDate,
                 reference, object, buyer,
-                location, deadline, detailUrl
+                location, deadline, detailUrl,
+                lotsPopupUrl
         );
+    }
+
+    private void persistIfNew(ConsultationRow row) {
+        if (row.refConsultation() == null || consultationRepository.existsByRefConsultation(row.refConsultation())) {
+            return;
+        }
+        Consultation entity = new Consultation();
+        entity.setRefConsultation(row.refConsultation());
+        entity.setOrgAcronyme(row.orgAcronyme());
+        entity.setProcedureType(row.procedureType());
+        entity.setProcedureFullName(row.procedureFullName());
+        entity.setCategory(row.category());
+        entity.setPublishedDate(row.publishedDate());
+        entity.setReference(row.reference());
+        entity.setObject(row.object());
+        entity.setBuyer(row.buyer());
+        entity.setLocation(row.location());
+        entity.setDeadline(row.deadline());
+        entity.setDetailUrl(row.detailUrl());
+        entity.setLotsPopupUrl(row.lotsPopupUrl());
+        consultationRepository.save(entity);
+    }
+
+    private String resolvePopupUrl(String jsHref, String baseUrl) {
+        if (jsHref == null) return null;
+        int start = jsHref.indexOf("'");
+        int end = jsHref.indexOf("'", start + 1);
+        if (start < 0 || end <= start) return null;
+        String relative = jsHref.substring(start + 1, end).replace("&amp;", "&");
+        try {
+            return URI.create(baseUrl).resolve(relative).toString();
+        } catch (Exception e) {
+            return relative;
+        }
     }
 
     private String attrOf(Element parent, String cssSelector, String attr) {

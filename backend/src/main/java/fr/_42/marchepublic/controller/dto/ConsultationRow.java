@@ -12,5 +12,6 @@ public record ConsultationRow(
         String buyer,
         String location,
         String deadline,
-        String detailUrl
+        String detailUrl,
+        String lotsPopupUrl
 ) {}
