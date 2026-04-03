@@ -17,10 +17,12 @@ import org.openqa.selenium.JavascriptExecutor;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.WebElement;
 import org.openqa.selenium.support.ui.ExpectedConditions;
+import org.openqa.selenium.support.ui.Select;
 import org.openqa.selenium.support.ui.WebDriverWait;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
 import java.net.URI;
@@ -30,6 +32,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+@Slf4j
 @Service
 public class SeleniumAdvancedSearchService {
 
@@ -67,24 +70,64 @@ public class SeleniumAdvancedSearchService {
         return driver.getPageSource();
     }
 
-    public List<ConsultationRow> scrapeAndParseResults() {
+    public List<ConsultationRow> scrapeAndParseResults(int maxPages) {
         initAndNavigate();
+        setPageSize("50");
+        waitForPageReady(driver);
 
-        Document doc = Jsoup.parse(driver.getPageSource(), driver.getCurrentUrl());
-        Element table = doc.selectFirst("table.table-results");
-        if (table == null) {
-            return List.of();
-        }
-
+        int totalPages = Math.min(readTotalPages(), maxPages);
+        log.info("Starting scrape: {} pages to process (50 results/page)", totalPages);
         List<ConsultationRow> rows = new ArrayList<>();
-        for (Element tr : table.select("tbody tr")) {
-            ConsultationRow row = parseRow(tr);
-            if (row != null) {
-                rows.add(row);
-                persistIfNew(row);
+
+        for (int page = 1; page <= totalPages; page++) {
+            log.info("Scraping page {}/{}", page, totalPages);
+            Document doc = Jsoup.parse(driver.getPageSource(), driver.getCurrentUrl());
+            Element table = doc.selectFirst("table.table-results");
+            int pageCount = 0;
+            if (table != null) {
+                for (Element tr : table.select("tbody tr")) {
+                    ConsultationRow row = parseRow(tr);
+                    if (row != null) {
+                        rows.add(row);
+                        persistIfNew(row);
+                        pageCount++;
+                    }
+                }
+            }
+            log.info("Page {}/{} done — {} consultations parsed", page, totalPages, pageCount);
+
+            if (page < totalPages) {
+                clickNextPage();
+                waitForPageReady(driver);
             }
         }
+
+        log.info("Scrape complete — {} total consultations across {} pages", rows.size(), totalPages);
         return rows;
+    }
+
+    private void setPageSize(String value) {
+        WebElement selectEl = new WebDriverWait(driver, Duration.ofSeconds(waitSeconds))
+                .until(ExpectedConditions.presenceOfElementLocated(
+                        By.id("ctl0_CONTENU_PAGE_resultSearch_listePageSizeBottom")));
+        new Select(selectEl).selectByValue(value);
+    }
+
+    private int readTotalPages() {
+        try {
+            WebElement totalEl = driver.findElement(
+                    By.id("ctl0_CONTENU_PAGE_resultSearch_nombrePageBottom"));
+            return Integer.parseInt(totalEl.getText().trim());
+        } catch (Exception e) {
+            return 1;
+        }
+    }
+
+    private void clickNextPage() {
+        WebElement nextLink = new WebDriverWait(driver, Duration.ofSeconds(waitSeconds))
+                .until(ExpectedConditions.elementToBeClickable(
+                        By.id("ctl0_CONTENU_PAGE_resultSearch_PagerBottom_ctl2")));
+        ((JavascriptExecutor) driver).executeScript("arguments[0].click();", nextLink);
     }
 
     private void initAndNavigate() {
@@ -122,11 +165,15 @@ public class SeleniumAdvancedSearchService {
         entity.setLotsPopupUrl(row.lotsPopupUrl());
         consultationRepository.save(entity);
 
+        log.info("Saved consultation [{}] — {}", entity.getRefConsultation(), entity.getObject());
+
         if (row.lotsPopupUrl() != null) {
+            log.info("  -> Fetching lots for [{}]", entity.getRefConsultation());
             fetchAndPersistLots(entity, row.lotsPopupUrl());
         }
 
         if (row.detailUrl() != null) {
+            log.info("  -> Fetching documents for [{}]", entity.getRefConsultation());
             fetchAndPersistDocuments(entity, row.detailUrl());
         }
     }
