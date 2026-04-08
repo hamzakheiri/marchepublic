@@ -7,6 +7,7 @@ import fr._42.marchepublic.model.Lot;
 import fr._42.marchepublic.repository.ConsultationDocumentRepository;
 import fr._42.marchepublic.repository.ConsultationRepository;
 import fr._42.marchepublic.repository.LotRepository;
+import fr._42.marchepublic.repository.ScraperConfigRepository;
 import org.jsoup.Connection;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
@@ -21,12 +22,15 @@ import org.openqa.selenium.support.ui.Select;
 import org.openqa.selenium.support.ui.WebDriverWait;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
 import java.net.URI;
 import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -42,17 +46,23 @@ public class SeleniumAdvancedSearchService {
     private final ConsultationRepository consultationRepository;
     private final LotRepository lotRepository;
     private final ConsultationDocumentRepository consultationDocumentRepository;
+    private final ScraperConfigRepository scraperConfigRepository;
+    private final SimpMessagingTemplate messagingTemplate;
     private final String baseUrl;
     private final String advancedSearchUrl;
     private final long waitSeconds;
 
     private WebDriver driver;
+    private volatile boolean stopRequested = false;
+    private volatile boolean running = false;
 
     public SeleniumAdvancedSearchService(
             ObjectProvider<WebDriver> webDriverProvider,
             ConsultationRepository consultationRepository,
             LotRepository lotRepository,
             ConsultationDocumentRepository consultationDocumentRepository,
+            ScraperConfigRepository scraperConfigRepository,
+            SimpMessagingTemplate messagingTemplate,
             @Value("${scraper.marches-publics.default-url}") String baseUrl,
             @Value("${scraper.marches-publics.advanced-search-url}") String advancedSearchUrl,
             @Value("${scraper.selenium.page-load-timeout-seconds:30}") long waitSeconds) {
@@ -60,9 +70,24 @@ public class SeleniumAdvancedSearchService {
         this.consultationRepository = consultationRepository;
         this.lotRepository = lotRepository;
         this.consultationDocumentRepository = consultationDocumentRepository;
+        this.scraperConfigRepository = scraperConfigRepository;
+        this.messagingTemplate = messagingTemplate;
         this.baseUrl = baseUrl;
         this.advancedSearchUrl = advancedSearchUrl;
         this.waitSeconds = waitSeconds;
+    }
+
+    public boolean isRunning() {
+        return running;
+    }
+
+    public void requestStop() {
+        stopRequested = true;
+        broadcast("STOP_REQUESTED", "Stop requested — will halt after current consultation");
+    }
+
+    public void broadcastStatus() {
+        broadcast("STATUS", running ? "RUNNING" : "IDLE");
     }
 
     public String scrapeSearchPage() {
@@ -70,40 +95,79 @@ public class SeleniumAdvancedSearchService {
         return driver.getPageSource();
     }
 
-    public List<ConsultationRow> scrapeAndParseResults(int maxPages) {
-        initAndNavigate();
-        setPageSize("50");
-        waitForPageReady(driver);
+    @Async
+    public void scrapeAndParseResults(int maxPages, boolean stopOnDuplicate) {
+        if (running) {
+            broadcast("WARN", "Scraper is already running");
+            return;
+        }
+        running = true;
+        stopRequested = false;
 
-        int totalPages = Math.min(readTotalPages(), maxPages);
-        log.info("Starting scrape: {} pages to process (50 results/page)", totalPages);
-        List<ConsultationRow> rows = new ArrayList<>();
+        try {
+            initAndNavigate();
+            setPageSize("50");
+            waitForPageReady(driver);
 
-        for (int page = 1; page <= totalPages; page++) {
-            log.info("Scraping page {}/{}", page, totalPages);
-            Document doc = Jsoup.parse(driver.getPageSource(), driver.getCurrentUrl());
-            Element table = doc.selectFirst("table.table-results");
-            int pageCount = 0;
-            if (table != null) {
-                for (Element tr : table.select("tbody tr")) {
-                    ConsultationRow row = parseRow(tr);
-                    if (row != null) {
-                        rows.add(row);
-                        persistIfNew(row);
-                        pageCount++;
+            int totalPages = Math.min(readTotalPages(), maxPages);
+            broadcast("STARTED", "Starting scrape: " + totalPages + " pages (50 results/page, stopOnDuplicate=" + stopOnDuplicate + ")");
+
+            int totalSaved = 0;
+            boolean done = false;
+
+            for (int page = 1; page <= totalPages && !done && !stopRequested; page++) {
+                broadcast("PAGE_START", "Scraping page " + page + "/" + totalPages);
+                Document doc = Jsoup.parse(driver.getPageSource(), driver.getCurrentUrl());
+                Element table = doc.selectFirst("table.table-results");
+                int pageCount = 0;
+                if (table != null) {
+                    for (Element tr : table.select("tbody tr")) {
+                        if (stopRequested) break;
+                        ConsultationRow row = parseRow(tr);
+                        if (row != null) {
+                            boolean isNew = persistIfNew(row);
+                            if (!isNew && stopOnDuplicate) {
+                                broadcast("DUPLICATE", "Duplicate found [" + row.refConsultation() + "] — stopping early");
+                                done = true;
+                                break;
+                            }
+                            if (isNew) pageCount++;
+                        }
                     }
                 }
-            }
-            log.info("Page {}/{} done — {} consultations parsed", page, totalPages, pageCount);
+                totalSaved += pageCount;
+                broadcast("PAGE_DONE", "Page " + page + "/" + totalPages + " done — " + pageCount + " new consultations saved");
 
-            if (page < totalPages) {
-                clickNextPage();
-                waitForPageReady(driver);
+                if (!done && !stopRequested && page < totalPages) {
+                    clickNextPage();
+                    waitForPageReady(driver);
+                }
             }
+
+            broadcast("DONE", "Scrape complete — " + totalSaved + " new consultations saved");
+            updateRunStatus("SUCCESS");
+        } catch (Exception e) {
+            log.error("Scrape failed", e);
+            broadcast("ERROR", "Scrape failed: " + e.getMessage());
+            updateRunStatus("FAILED");
+        } finally {
+            running = false;
+            stopRequested = false;
         }
+    }
 
-        log.info("Scrape complete — {} total consultations across {} pages", rows.size(), totalPages);
-        return rows;
+    private void updateRunStatus(String status) {
+        scraperConfigRepository.findById(1L).ifPresent(config -> {
+            config.setLastRunAt(LocalDateTime.now());
+            config.setLastRunStatus(status);
+            scraperConfigRepository.save(config);
+        });
+    }
+
+    private void broadcast(String type, String message) {
+        log.info("[{}] {}", type, message);
+        messagingTemplate.convertAndSend("/topic/scraper/logs",
+                (Object) Map.of("type", type, "message", message));
     }
 
     private void setPageSize(String value) {
@@ -144,9 +208,9 @@ public class SeleniumAdvancedSearchService {
         waitForPageReady(driver);
     }
 
-    private void persistIfNew(ConsultationRow row) {
+    private boolean persistIfNew(ConsultationRow row) {
         if (row.refConsultation() == null || consultationRepository.existsByRefConsultation(row.refConsultation())) {
-            return;
+            return false;
         }
 
         Consultation entity = new Consultation();
@@ -176,6 +240,8 @@ public class SeleniumAdvancedSearchService {
             log.info("  -> Fetching documents for [{}]", entity.getRefConsultation());
             fetchAndPersistDocuments(entity, row.detailUrl());
         }
+
+        return true;
     }
 
     private void fetchAndPersistDocuments(Consultation consultation, String detailUrl) {
