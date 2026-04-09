@@ -22,7 +22,7 @@ public class ScraperWebSocketController {
     public void start() {
         ScraperConfig config = scraperConfigRepository.findById(1L)
                 .orElseGet(() -> scraperConfigRepository.save(new ScraperConfig()));
-        scraperService.scrapeAndParseResults(config.getMaxPages(), config.isStopOnDuplicate());
+        scraperService.scrapeAndParseResults(config.getMaxPages(), config.isStopOnDuplicate(), config.getMaxResults());
     }
 
     @MessageMapping("/scraper/stop")

@@ -96,7 +96,7 @@ public class SeleniumAdvancedSearchService {
     }
 
     @Async
-    public void scrapeAndParseResults(int maxPages, boolean stopOnDuplicate) {
+    public void scrapeAndParseResults(int maxPages, boolean stopOnDuplicate, int maxResults) {
         if (running) {
             broadcast("WARN", "Scraper is already running");
             return;
@@ -110,7 +110,8 @@ public class SeleniumAdvancedSearchService {
             waitForPageReady(driver);
 
             int totalPages = Math.min(readTotalPages(), maxPages);
-            broadcast("STARTED", "Starting scrape: " + totalPages + " pages (50 results/page, stopOnDuplicate=" + stopOnDuplicate + ")");
+            broadcast("STARTED", "Starting scrape: " + totalPages + " pages (50 results/page, stopOnDuplicate=" + stopOnDuplicate
+                    + (maxResults > 0 ? ", maxResults=" + maxResults : "") + ")");
 
             int totalSaved = 0;
             boolean done = false;
@@ -123,6 +124,11 @@ public class SeleniumAdvancedSearchService {
                 if (table != null) {
                     for (Element tr : table.select("tbody tr")) {
                         if (stopRequested) break;
+                        if (maxResults > 0 && totalSaved + pageCount >= maxResults) {
+                            broadcast("MAX_RESULTS", "Reached maxResults=" + maxResults + " — stopping early");
+                            done = true;
+                            break;
+                        }
                         ConsultationRow row = parseRow(tr);
                         if (row != null) {
                             boolean isNew = persistIfNew(row);

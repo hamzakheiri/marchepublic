@@ -9,3 +9,19 @@ services:
       - "5432:5432"
     volumes:
       - ./pgdata:/var/lib/postgresql
+
+  backend:
+    image: maven:3.9-eclipse-temurin-17
+    working_dir: /workspace/backend
+    command: mvn spring-boot:run
+    depends_on:
+      - postgres
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/marchepublic
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      SCRAPER_SELENIUM_ENABLED: "false"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./backend:/workspace/backend

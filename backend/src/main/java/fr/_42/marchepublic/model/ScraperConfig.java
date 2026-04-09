@@ -26,6 +26,10 @@ public class ScraperConfig {
     @Column(nullable = false)
     private boolean stopOnDuplicate = true;
 
+    /** Stop after saving this many new results. 0 = unlimited. */
+    @Column(nullable = false)
+    private int maxResults = 0;
+
     @Column(nullable = false)
     private int intervalMinutes = 60;
 
